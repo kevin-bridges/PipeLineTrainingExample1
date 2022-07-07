@@ -1,0 +1,102 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- dev
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+- ${{if eq(variables['build.SourceBranchName'], 'dev')}}:
+  - group: dev-scope
+- ${{if eq(variables['build.SourceBranchName'], 'master')}}:
+  - group: master-scope
+- name: CSPROJ
+  value: dotnet_proj.csproj 
+- name: PublishNuGetFeed
+  value: 'babe5295-bd9a-496b-b4ea-d8d94f3aee49/e1664b3e-30d9-489c-bf8a-0c15f7e6b280'
+
+steps:
+
+- task: PowerShell@2
+  displayName: 'Get Version $(BuildConfiguration)'
+  inputs:
+    targetType: 'inline'
+    script: |
+      Write-Host "Get NuGet Version from csproj file"
+      $version_array = $(System.DefaultWorkingDirectory)\Get-PackageVersion.ps1 -filename .\$(CSPROJ)
+      $PackageVersion = $version_array[0]
+      $PackageSuffix = $version_array[1]
+      $FullVersionDebug = "$PackageVersion.$(BUILD.BUILDID)-$PackageSuffix"
+      $FullVersion = "$PackageVersion"
+      Write-Host "##vso[task.setvariable variable=SEMANTIC_VERSION;]$PackageVersion"
+      Write-Host "##vso[task.setvariable variable=FULL_VERSION_DEBUG;]$FullVersionDebug"
+      Write-Host "##vso[task.setvariable variable=FULL_VERSION;]$FullVersion"
+    failOnStderr: true
+    pwsh: true
+    workingDirectory: '$(System.DefaultWorkingDirectory)'
+
+- script: set
+  displayName: 'Show Environment Variables'
+
+- task: DotNetCoreCLI@2
+  displayName: 'Build Project $(BuildConfiguration)'
+  inputs:
+    command: 'build'
+    projects: '**/*.csproj'
+    configuration: $(BuildConfiguration)
+    workingDirectory: '$(System.DefaultWorkingDirectory)'
+
+- ${{if eq(variables['build.SourceBranchName'], 'dev')}}:
+  - task: DotNetCoreCLI@2
+    displayName: 'NuGet Pack $(BuildConfiguration) dev'
+    inputs:
+      command: 'pack'
+      packagesToPack: '**/*.csproj'
+      includeSymbols: true
+      versioningScheme: 'byEnvVar'
+      configuration: $(BuildConfiguration)
+      versionEnvVar: FULL_VERSION_DEBUG
+
+
+- ${{if eq(variables['build.SourceBranchName'], 'master')}}:
+  - task: DotNetCoreCLI@2
+    displayName: 'NuGet Pack $(BuildConfiguration) master'
+    inputs:
+      command: 'pack'
+      packagesToPack: '**/*.csproj'
+      versioningScheme: 'byEnvVar'
+      configuration: $(BuildConfiguration)
+      versionEnvVar: FULL_VERSION
+
+
+
+- task: CopyFiles@2
+  displayName: 'Copy Files for $(BuildConfiguration) Config'
+  inputs:
+    SourceFolder: '$(System.DefaultWorkingDirectory)/bin/$(BuildConfiguration)'
+    Contents: '*.nupkg'
+    TargetFolder: '$(BUILD.ARTIFACTSTAGINGDIRECTORY)'
+    CleanTargetFolder: true
+
+- task: PowerShell@2
+  displayName: 'What is in the artifact staging directory'
+  inputs:
+    targetType: 'inline'
+    script: |
+      ls $(BUILD.ARTIFACTSTAGINGDIRECTORY)
+      Write-Host "ls '$(System.DefaultWorkingDirectory)/bin/$(BuildConfiguration)'"
+      ls '$(System.DefaultWorkingDirectory)/bin/$(BuildConfiguration)'
+    workingDirectory: '$(BUILD.ARTIFACTSTAGINGDIRECTORY)'
+
+- task: NuGetCommand@2
+  displayName: 'NuGet Push $(BuildConfiguration)'
+  inputs:
+    command: 'push'
+    packagesToPush: '$(Build.ArtifactStagingDirectory)/**/*.nupkg;!$(Build.ArtifactStagingDirectory)/**/*.symbols.nupkg'
+    nuGetFeedType: 'internal'
+    publishVstsFeed: '$(PublishNuGetFeed)'
+    allowPackageConflicts: false
